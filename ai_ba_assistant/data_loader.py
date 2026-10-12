@@ -11,6 +11,41 @@ import os
 import re
 
 
+def _load_csv_to_duckdb(con: duckdb.DuckDBPyConnection, file_path: str, table_name: str) -> None:
+    """
+    Loads a CSV file into DuckDB with automatic encoding fallback.
+    Tries native DuckDB read_csv_auto first, then falls back to pandas with
+    support for utf-8, cp1252, latin-1, and iso-8859-1 encodings.
+    """
+    clean_path = file_path.replace("\\", "/")
+    try:
+        con.execute(f"""
+            CREATE TABLE "{table_name}" AS
+            SELECT * FROM read_csv_auto('{clean_path}', SAMPLE_SIZE=-1)
+        """)
+        return
+    except Exception:
+        # Fall back to pandas if DuckDB native parser fails (e.g. non-UTF8 encoding)
+        pass
+
+    encodings = ["utf-8", "cp1252", "latin-1", "iso-8859-1"]
+    df = None
+    for enc in encodings:
+        try:
+            df = pd.read_csv(file_path, encoding=enc)
+            break
+        except Exception:
+            continue
+
+    if df is None:
+        df = pd.read_csv(file_path, encoding="latin-1", encoding_errors="replace", on_bad_lines="skip")
+
+    df = _clean_column_names(df)
+    con.register("temp_df", df)
+    con.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM temp_df')
+    con.unregister("temp_df")
+
+
 def load_file_to_duckdb(file_path: str, table_name: str = "data") -> duckdb.DuckDBPyConnection:
     """
     Loads a CSV or Excel file into an in-memory DuckDB table.
@@ -20,17 +55,14 @@ def load_file_to_duckdb(file_path: str, table_name: str = "data") -> duckdb.Duck
     ext = os.path.splitext(file_path)[1].lower()
 
     if ext == ".csv":
-        # DuckDB's read_csv_auto infers types + delimiters automatically
-        con.execute(f"""
-            CREATE TABLE {table_name} AS
-            SELECT * FROM read_csv_auto('{file_path}', SAMPLE_SIZE=-1)
-        """)
+        _load_csv_to_duckdb(con, file_path, table_name)
     elif ext in (".xlsx", ".xls"):
         # DuckDB doesn't read Excel natively -> load via pandas, then register
         df = pd.read_excel(file_path)
         df = _clean_column_names(df)
         con.register("temp_df", df)
-        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM temp_df")
+        con.execute(f'CREATE TABLE "{table_name}" AS SELECT * FROM temp_df')
+        con.unregister("temp_df")
     else:
         raise ValueError(f"Unsupported file type: {ext}. Use .csv or .xlsx")
 
@@ -70,10 +102,7 @@ def load_multiple_files_to_duckdb(files_and_paths: list) -> duckdb.DuckDBPyConne
         existing_names.add(table_name)
         ext = os.path.splitext(path)[1].lower()
         if ext == ".csv":
-            con.execute(f"""
-                CREATE TABLE "{table_name}" AS
-                SELECT * FROM read_csv_auto('{path}', SAMPLE_SIZE=-1)
-            """)
+            _load_csv_to_duckdb(con, path, table_name)
         elif ext in (".xlsx", ".xls"):
             df = pd.read_excel(path)
             df = _clean_column_names(df)
