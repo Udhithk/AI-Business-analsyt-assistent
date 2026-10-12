@@ -76,13 +76,26 @@ Pre-computed statistics (trust these numbers exactly, do not recalculate):
 
 Write the business insight now."""
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=user_prompt,
-        config={
-            "system_instruction": INSIGHT_SYSTEM_PROMPT,
-            "max_output_tokens": 600,
-        },
-    )
+    config = {
+        "system_instruction": INSIGHT_SYSTEM_PROMPT,
+        "max_output_tokens": 2048,
+        "thinking_config": {"thinking_budget": 0},
+    }
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_prompt,
+            config=config,
+        )
+    except Exception:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_prompt,
+            config={
+                "system_instruction": INSIGHT_SYSTEM_PROMPT,
+                "max_output_tokens": 2048,
+            },
+        )
 
     return response.text.strip()

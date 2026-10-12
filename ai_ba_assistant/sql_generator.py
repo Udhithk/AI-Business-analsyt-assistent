@@ -50,6 +50,14 @@ def _is_safe_select(sql: str) -> bool:
     if ";" in stripped:
         return False
 
+    # Block incomplete / truncated SQL with unbalanced quotes or parentheses
+    if stripped.count('"') % 2 != 0:
+        return False
+    if stripped.count("'") % 2 != 0:
+        return False
+    if stripped.count("(") != stripped.count(")"):
+        return False
+
     return True
 
 
@@ -72,23 +80,42 @@ Business question: "{question}"
 
 Return only the SQL query."""
 
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=user_prompt,
-        config={
-            "system_instruction": SQL_SYSTEM_PROMPT,
-            "max_output_tokens": 500,
-        },
-    )
+    config = {
+        "system_instruction": SQL_SYSTEM_PROMPT,
+        "max_output_tokens": 2048,
+        "thinking_config": {"thinking_budget": 0},
+    }
+
+    try:
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_prompt,
+            config=config,
+        )
+    except Exception:
+        # Fallback if model/SDK doesn't support thinking_config
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=user_prompt,
+            config={
+                "system_instruction": SQL_SYSTEM_PROMPT,
+                "max_output_tokens": 2048,
+            },
+        )
 
     sql = response.text.strip()
-    sql = sql.replace("```sql", "").replace("```", "").strip()
+    if "```" in sql:
+        matches = re.findall(r"```(?:sql)?\s*([\s\S]*?)\s*```", sql, re.IGNORECASE)
+        if matches:
+            sql = matches[0].strip()
+        else:
+            sql = sql.replace("```sql", "").replace("```", "").strip()
 
     if sql == "NO_QUERY_POSSIBLE":
         raise UnsafeSQLError("The question can't be answered from this dataset's schema.")
 
     if not _is_safe_select(sql):
-        raise UnsafeSQLError(f"Generated SQL failed the safety check and was blocked: {sql}")
+        raise UnsafeSQLError(f"Generated SQL failed the safety/validation check and was blocked: {sql}")
 
     # Add a hard row limit as a final safety net against runaway result sets
     if "LIMIT" not in sql.upper():
